@@ -56,14 +56,14 @@ const camera = new PerspectiveCamera(45, 1, 0.1, 100)
 camera.position.set(4, 3, 6)
 
 const gridHelper = new GridHelper(floorSize, 28, 0x5eead4, 0x334155)
-gridHelper.position.y = 0.01
+const floorVisualPosition = ref<[number, number, number]>([0, 0, 0])
 
 const characterRoot = shallowRef(new Group())
 const characterVisualRoot = new Group()
 characterRoot.value.add(characterVisualRoot)
 const characterHalfExtents = new CANNON.Vec3(0.48, 1.15, 0.36)
 const pressedMovementKeys = new Set<string>()
-const movementSpeed = 3.2
+const movementSpeed = 30
 
 const qualityPresets: Record<QualityMode, QualityPreset> = {
   low: {
@@ -406,9 +406,9 @@ const handleLoop = ({ delta }: TresLoopContext) => {
   }
 
   characterRoot.value.position.set(
-    characterBody.position.x,
+    0,
     characterBody.position.y - characterHalfExtents.y,
-    characterBody.position.z
+    0
   )
   characterRoot.value.quaternion.set(
     characterBody.quaternion.x,
@@ -418,6 +418,12 @@ const handleLoop = ({ delta }: TresLoopContext) => {
   )
 
   animationMixer?.update(delta)
+
+  floorVisualPosition.value = [
+    -characterBody.position.x,
+    0,
+    -characterBody.position.z
+  ]
 
   floorAlignmentElapsed += delta
   if (floorAlignmentElapsed >= currentQuality.value.floorAlignmentInterval) {
@@ -510,9 +516,13 @@ onBeforeUnmount(() => {
 
       <primitive :object="characterRoot" />
 
-      <primitive :object="gridHelper" />
+      <primitive
+        :object="gridHelper"
+        :position="[floorVisualPosition[0], 0.01, floorVisualPosition[2]]"
+      />
 
       <TresMesh
+        :position="floorVisualPosition"
         :rotation="[-Math.PI / 2, 0, 0]"
         receive-shadow
       >
