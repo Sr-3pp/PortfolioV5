@@ -1,148 +1,34 @@
 <script setup lang="ts">
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Object3D, Scene, ShadowMapType, WebGLRenderer } from 'three'
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import * as CANNON from 'cannon-es'
+import type { Object3D, Scene, WebGLRenderer } from 'three'
 import {
   AnimationAction,
-  AnimationClip,
-  BasicShadowMap,
   AnimationMixer,
   Box3,
-  Color,
   Fog,
   GridHelper,
   LoopRepeat,
-  Group,
   Mesh,
-  PCFShadowMap,
-  PerspectiveCamera,
   Vector3
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-
-type TresReadyContext = {
-  scene: {
-    value: Scene
-  }
-  renderer: {
-    instance: WebGLRenderer
-  }
-}
-
-type TresLoopContext = {
-  delta: number
-}
-
-type QualityMode = 'low' | 'medium' | 'high'
-
-type QualityPreset = {
-  label: string
-  modelUrl: string
-  dpr: [number, number]
-  antialias: boolean
-  shadows: boolean
-  shadowMapType: ShadowMapType
-  directionalLightIntensity: number
-  pointLightIntensity: number
-  fogFar: number
-  floorAlignmentInterval: number
-}
-
-const floorSize = 28
-const sceneColor = new Color(0x11151c)
-const camera = new PerspectiveCamera(45, 1, 0.1, 100)
-camera.position.set(4, 3, 6)
+import { camera, floorSize, movementSpeed, qualityModes, qualityPresets, sceneColor } from '../../utils/three-d/config.js'
+import { clearObjectChildren, createLatestGltfLoader, findAnimationClip } from '../../utils/three-d/model-utils.js'
+import type { QualityMode, TresLoopContext, TresReadyContext } from '../../utils/three-d/types.js'
 
 const gridHelper = new GridHelper(floorSize, 28, 0x5eead4, 0x334155)
-const floorVisualPosition = ref<[number, number, number]>([0, 0, 0])
 
-const characterRoot = shallowRef(new Group())
-const characterVisualRoot = new Group()
-characterRoot.value.add(characterVisualRoot)
-const characterHalfExtents = new CANNON.Vec3(0.48, 1.15, 0.36)
-const pressedMovementKeys = new Set<string>()
-const movementSpeed = 30
-
-const qualityPresets: Record<QualityMode, QualityPreset> = {
-  low: {
-    label: 'Low',
-    modelUrl: '/models/character-optimized.glb',
-    dpr: [1, 1],
-    antialias: false,
-    shadows: false,
-    shadowMapType: BasicShadowMap,
-    directionalLightIntensity: 2.1,
-    pointLightIntensity: 0,
-    fogFar: 28,
-    floorAlignmentInterval: 1 / 8
-  },
-  medium: {
-    label: 'Medium',
-    modelUrl: '/models/character-optimized.glb',
-    dpr: [1, 1.25],
-    antialias: true,
-    shadows: true,
-    shadowMapType: PCFShadowMap,
-    directionalLightIntensity: 2.6,
-    pointLightIntensity: 9,
-    fogFar: 34,
-    floorAlignmentInterval: 1 / 12
-  },
-  high: {
-    label: 'High',
-    modelUrl: '/models/character.glb',
-    dpr: [1, 1.75],
-    antialias: true,
-    shadows: true,
-    shadowMapType: PCFShadowMap,
-    directionalLightIntensity: 3,
-    pointLightIntensity: 18,
-    fogFar: 38,
-    floorAlignmentInterval: 1 / 18
-  }
-}
-
-const qualityModes = Object.keys(qualityPresets) as QualityMode[]
+const {
+  characterBody,
+  characterHalfExtents,
+  characterRoot,
+  characterVisualRoot,
+  floorVisualPosition,
+  shoveCharacter,
+  updateFrame,
+} = useThreeDCharacterController(movementSpeed)
 const selectedQuality = ref<QualityMode>('medium')
 const currentQuality = computed(() => qualityPresets[selectedQuality.value])
-
-const floorMaterialPhysics = new CANNON.Material('floor')
-const characterMaterialPhysics = new CANNON.Material('character')
-const world = new CANNON.World({
-  gravity: new CANNON.Vec3(0, -9.82, 0)
-})
-world.broadphase = new CANNON.SAPBroadphase(world)
-world.allowSleep = true
-world.addContactMaterial(new CANNON.ContactMaterial(
-  floorMaterialPhysics,
-  characterMaterialPhysics,
-  {
-    friction: 0.7,
-    restitution: 0.18
-  }
-))
-
-const floorBody = new CANNON.Body({
-  mass: 0,
-  material: floorMaterialPhysics,
-  shape: new CANNON.Plane()
-})
-floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0)
-world.addBody(floorBody)
-
-const characterBody = new CANNON.Body({
-  mass: 8,
-  material: characterMaterialPhysics,
-  position: new CANNON.Vec3(0, 5, 0),
-  shape: new CANNON.Box(characterHalfExtents),
-  linearDamping: 0.25,
-  angularDamping: 0.82,
-  fixedRotation: true
-})
-characterBody.quaternion.setFromEuler(0, 0.2, 0)
-world.addBody(characterBody)
 
 let controls: OrbitControls | undefined
 let sceneInstance: Scene | undefined
@@ -151,41 +37,11 @@ let animationMixer: AnimationMixer | undefined
 let idleAction: AnimationAction | undefined
 let walkAction: AnimationAction | undefined
 let activeAction: AnimationAction | undefined
-let accumulator = 0
 let floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
 let hasMounted = false
-let modelLoadVersion = 0
 const fixedTimeStep = 1 / 60
-const movementDirection = new Vector3()
 const characterBounds = new Box3()
-
-const disposeMaterialResources = (material: Record<string, unknown> & { dispose?: () => void }) => {
-  for (const value of Object.values(material)) {
-    if (value && typeof value === 'object' && 'isTexture' in value) {
-      (value as { dispose?: () => void }).dispose?.()
-    }
-  }
-
-  material.dispose?.()
-}
-
-const disposeObjectResources = (object: Object3D) => {
-  object.traverse((node: Object3D) => {
-    if (!(node instanceof Mesh)) {
-      return
-    }
-
-    node.geometry.dispose()
-
-    const materials = Array.isArray(node.material)
-      ? node.material
-      : [node.material]
-
-    for (const material of materials) {
-      disposeMaterialResources(material as Record<string, unknown> & { dispose?: () => void })
-    }
-  })
-}
+const modelLoader = createLatestGltfLoader()
 
 const resetAnimationState = () => {
   animationMixer?.stopAllAction()
@@ -197,11 +53,7 @@ const resetAnimationState = () => {
 
 const clearCharacterModel = () => {
   resetAnimationState()
-
-  for (const child of [...characterVisualRoot.children]) {
-    characterVisualRoot.remove(child)
-    disposeObjectResources(child)
-  }
+  clearObjectChildren(characterVisualRoot)
 }
 
 const applyQualitySettings = () => {
@@ -215,10 +67,6 @@ const applyQualitySettings = () => {
     rendererInstance.shadowMap.enabled = currentQuality.value.shadows
     rendererInstance.shadowMap.type = currentQuality.value.shadowMapType
   }
-}
-
-const findAnimationClip = (clips: AnimationClip[], matcher: RegExp) => {
-  return clips.find((clip) => matcher.test(clip.name))
 }
 
 const playCharacterAnimation = (nextAction: AnimationAction | undefined) => {
@@ -281,18 +129,9 @@ const prepareModel = (gltf: GLTF) => {
 }
 
 const loadCharacterModel = () => {
-  const loader = new GLTFLoader()
-  const requestVersion = ++modelLoadVersion
-
   clearCharacterModel()
 
-  loader.load(currentQuality.value.modelUrl, (gltf) => {
-    if (requestVersion !== modelLoadVersion) {
-      return
-    }
-
-    prepareModel(gltf)
-  })
+  modelLoader.load(currentQuality.value.modelUrl, prepareModel)
 }
 
 const setQualityMode = (mode: QualityMode) => {
@@ -324,13 +163,16 @@ const alignCharacterToFloor = () => {
 }
 
 const handleReady = (context: TresReadyContext) => {
-  sceneInstance = context.scene.value
-  sceneInstance.background = sceneColor
+  const scene = context.scene.value
+  const renderer = context.renderer.instance
 
-  rendererInstance = context.renderer.instance
+  sceneInstance = scene
+  scene.background = sceneColor
+
+  rendererInstance = renderer
   applyQualitySettings()
 
-  controls = new OrbitControls(camera, rendererInstance.domElement)
+  controls = new OrbitControls(camera, renderer.domElement)
   controls.enableDamping = true
   controls.target.set(0, 1.2, 0)
   controls.maxPolarAngle = Math.PI * 0.48
@@ -338,92 +180,14 @@ const handleReady = (context: TresReadyContext) => {
   controls.maxDistance = 12
 }
 
-const shoveCharacter = () => {
-  if (characterBody.sleepState !== CANNON.Body.AWAKE) {
-    characterBody.wakeUp()
-  }
-
-  characterBody.applyImpulse(
-    new CANNON.Vec3(
-      (Math.random() - 0.5) * 2.5,
-      2.4,
-      (Math.random() - 0.5) * 2.5
-    ),
-    characterBody.position
-  )
-}
-
-const updateCharacterMovement = () => {
-  movementDirection.set(0, 0, 0)
-
-  if (pressedMovementKeys.has('ArrowUp')) {
-    movementDirection.z -= 1
-  }
-
-  if (pressedMovementKeys.has('ArrowDown')) {
-    movementDirection.z += 1
-  }
-
-  if (pressedMovementKeys.has('ArrowLeft')) {
-    movementDirection.x -= 1
-  }
-
-  if (pressedMovementKeys.has('ArrowRight')) {
-    movementDirection.x += 1
-  }
-
-  if (movementDirection.lengthSq() === 0) {
-    characterBody.velocity.x = 0
-    characterBody.velocity.z = 0
-    playCharacterAnimation(idleAction)
-    return
-  }
-
-  movementDirection.normalize()
-
-  if (characterBody.sleepState !== CANNON.Body.AWAKE) {
-    characterBody.wakeUp()
-  }
-
-  characterBody.velocity.x = movementDirection.x * movementSpeed
-  characterBody.velocity.z = movementDirection.z * movementSpeed
-  characterBody.quaternion.setFromEuler(
-    0,
-    Math.atan2(movementDirection.x, movementDirection.z),
-    0
-  )
-  playCharacterAnimation(walkAction)
-}
-
 const handleLoop = ({ delta }: TresLoopContext) => {
-  updateCharacterMovement()
-
-  accumulator += Math.min(delta, 0.1)
-
-  while (accumulator >= fixedTimeStep) {
-    world.fixedStep(fixedTimeStep)
-    accumulator -= fixedTimeStep
-  }
-
-  characterRoot.value.position.set(
-    0,
-    characterBody.position.y - characterHalfExtents.y,
-    0
-  )
-  characterRoot.value.quaternion.set(
-    characterBody.quaternion.x,
-    characterBody.quaternion.y,
-    characterBody.quaternion.z,
-    characterBody.quaternion.w
-  )
+  updateFrame(delta, {
+    idleAction,
+    walkAction,
+    playAnimation: playCharacterAnimation
+  })
 
   animationMixer?.update(delta)
-
-  floorVisualPosition.value = [
-    -characterBody.position.x,
-    0,
-    -characterBody.position.z
-  ]
 
   floorAlignmentElapsed += delta
   if (floorAlignmentElapsed >= currentQuality.value.floorAlignmentInterval) {
@@ -434,37 +198,16 @@ const handleLoop = ({ delta }: TresLoopContext) => {
   controls?.update()
 }
 
-const handleKeydown = (event: KeyboardEvent) => {
-  if (!event.key.startsWith('Arrow')) {
-    return
-  }
-
-  event.preventDefault()
-  pressedMovementKeys.add(event.key)
-}
-
-const handleKeyup = (event: KeyboardEvent) => {
-  if (!event.key.startsWith('Arrow')) {
-    return
-  }
-
-  event.preventDefault()
-  pressedMovementKeys.delete(event.key)
-}
-
 onMounted(() => {
   hasMounted = true
   loadCharacterModel()
-  window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('keyup', handleKeyup)
 })
 
 onBeforeUnmount(() => {
   hasMounted = false
+  modelLoader.invalidate()
   clearCharacterModel()
   controls?.dispose()
-  window.removeEventListener('keydown', handleKeydown)
-  window.removeEventListener('keyup', handleKeyup)
 })
 </script>
 
