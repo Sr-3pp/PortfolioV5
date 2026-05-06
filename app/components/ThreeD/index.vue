@@ -7,12 +7,13 @@ import {
   Box3,
   Fog,
   GridHelper,
+  LoopOnce,
   LoopRepeat,
   Mesh,
   Vector3
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { camera, floorSize, movementSpeed, qualityModes, qualityPresets, sceneColor } from '../../utils/three-d/config.js'
+import { camera, crouchMovementSpeed, floorSize, jumpAnticipationTime, jumpImpulse, movementSpeed, qualityModes, qualityPresets, sceneColor } from '../../utils/three-d/config.js'
 import { clearObjectChildren, createLatestGltfLoader, findAnimationClip } from '../../utils/three-d/model-utils.js'
 import type { QualityMode, TresLoopContext, TresReadyContext } from '../../utils/three-d/types.js'
 
@@ -24,9 +25,10 @@ const {
   characterRoot,
   characterVisualRoot,
   floorVisualPosition,
+  isJumpCharging,
   shoveCharacter,
   updateFrame,
-} = useThreeDCharacterController(movementSpeed)
+} = useThreeDCharacterController(movementSpeed, crouchMovementSpeed, jumpImpulse)
 const selectedQuality = ref<QualityMode>('medium')
 const currentQuality = computed(() => qualityPresets[selectedQuality.value])
 
@@ -38,6 +40,7 @@ let idleAction: AnimationAction | undefined
 let walkAction: AnimationAction | undefined
 let crouchIdleAction: AnimationAction | undefined
 let crouchWalkAction: AnimationAction | undefined
+let jumpAction: AnimationAction | undefined
 let activeAction: AnimationAction | undefined
 let floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
 let hasMounted = false
@@ -52,6 +55,7 @@ const resetAnimationState = () => {
   walkAction = undefined
   crouchIdleAction = undefined
   crouchWalkAction = undefined
+  jumpAction = undefined
   activeAction = undefined
 }
 
@@ -73,18 +77,68 @@ const applyQualitySettings = () => {
   }
 }
 
+const isCrouchAction = (action: AnimationAction | undefined) => {
+  return action === crouchIdleAction || action === crouchWalkAction
+}
+
+const isJumpAction = (action: AnimationAction | undefined) => {
+  return action === jumpAction
+}
+
+const syncJumpChargeAnimation = (delta: number) => {
+  if (!jumpAction || !animationMixer) {
+    return false
+  }
+
+  if (isJumpCharging.value) {
+    playCharacterAnimation(jumpAction)
+
+    const holdTime = Math.min(jumpAnticipationTime, jumpAction.getClip().duration)
+
+    if (jumpAction.time < holdTime) {
+      jumpAction.paused = false
+      animationMixer.update(delta)
+    }
+
+    if (jumpAction.time >= holdTime) {
+      jumpAction.time = holdTime
+      jumpAction.paused = true
+    }
+
+    return true
+  }
+
+  if (jumpAction.paused) {
+    jumpAction.paused = false
+  }
+
+  return false
+}
+
 const playCharacterAnimation = (nextAction: AnimationAction | undefined) => {
   if (!nextAction || activeAction === nextAction) {
     return
   }
 
+  const enteringCrouch = isCrouchAction(nextAction)
+  const leavingCrouch = isCrouchAction(activeAction) && !isCrouchAction(nextAction)
+  const jumpTransition = isJumpAction(nextAction) || isJumpAction(activeAction)
+  const fadeDuration = jumpTransition
+    ? 0.05
+    : enteringCrouch
+    ? 0
+    : leavingCrouch
+      ? 0.05
+      : 0.18
+
   nextAction.enabled = true
   nextAction.reset()
-  nextAction.setLoop(LoopRepeat, Infinity)
-  nextAction.fadeIn(0.18)
+  nextAction.setLoop(isJumpAction(nextAction) ? LoopOnce : LoopRepeat, Infinity)
+  nextAction.clampWhenFinished = isJumpAction(nextAction)
+  nextAction.fadeIn(fadeDuration)
   nextAction.play()
 
-  activeAction?.fadeOut(0.18)
+  activeAction?.fadeOut(fadeDuration)
   activeAction = nextAction
   floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
 }
@@ -133,10 +187,14 @@ const prepareModel = (gltf: GLTF) => {
     ?? findAnimationClip(gltf.animations, /crouch.*walk|walk.*crouch/i)
     ?? walkClip
 
+  const jumpClip = findAnimationClip(gltf.animations, /^jumping$/i)
+    ?? findAnimationClip(gltf.animations, /jump/i)
+
   idleAction = animationMixer.clipAction(idleClip)
   walkAction = animationMixer.clipAction(walkClip)
   crouchIdleAction = animationMixer.clipAction(crouchIdleClip)
   crouchWalkAction = animationMixer.clipAction(crouchWalkClip)
+  jumpAction = jumpClip ? animationMixer.clipAction(jumpClip) : undefined
 
   playCharacterAnimation(idleAction)
 }
@@ -199,10 +257,15 @@ const handleLoop = ({ delta }: TresLoopContext) => {
     walkAction,
     crouchIdleAction,
     crouchWalkAction,
+    jumpAction,
     playAnimation: playCharacterAnimation
   })
 
-  animationMixer?.update(delta)
+  const handledJumpCharge = syncJumpChargeAnimation(delta)
+
+  if (!handledJumpCharge) {
+    animationMixer?.update(delta)
+  }
 
   floorAlignmentElapsed += delta
   if (floorAlignmentElapsed >= currentQuality.value.floorAlignmentInterval) {

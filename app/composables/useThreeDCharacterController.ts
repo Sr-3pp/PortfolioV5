@@ -7,11 +7,12 @@ type AnimationState = {
   walkAction?: AnimationAction
   crouchIdleAction?: AnimationAction
   crouchWalkAction?: AnimationAction
+  jumpAction?: AnimationAction
   playAnimation: (action?: AnimationAction) => void
 }
 
-export const useThreeDCharacterController = (movementSpeed: number) => {
-  const crouchSpeed = Math.max(movementSpeed - 5, 0)
+export const useThreeDCharacterController = (movementSpeed: number, crouchMovementSpeed: number, jumpImpulse: number) => {
+  const crouchSpeed = Math.max(crouchMovementSpeed, 0)
   const characterRoot = shallowRef(new Group())
   const characterVisualRoot = new Group()
   characterRoot.value.add(characterVisualRoot)
@@ -61,6 +62,18 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
   let accumulator = 0
   const fixedTimeStep = 1 / 60
   const movementDirection = new Vector3()
+  const isJumpCharging = ref(false)
+  let isJumping = false
+  let jumpReleased = false
+
+  const groundContactThreshold = 0.08
+  const groundedVerticalSpeedThreshold = 0.35
+
+  const isGrounded = () => {
+    const standingHeight = characterHalfExtents.y
+    return characterBody.position.y <= standingHeight + groundContactThreshold
+      && Math.abs(characterBody.velocity.y) <= groundedVerticalSpeedThreshold
+  }
 
   const shoveCharacter = () => {
     if (characterBody.sleepState !== CANNON.Body.AWAKE) {
@@ -82,6 +95,7 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     walkAction,
     crouchIdleAction,
     crouchWalkAction,
+    jumpAction,
     playAnimation
   }: AnimationState) => {
     movementDirection.set(0, 0, 0)
@@ -105,7 +119,13 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     if (movementDirection.lengthSq() === 0) {
       characterBody.velocity.x = 0
       characterBody.velocity.z = 0
-      playAnimation(isCrouching ? crouchIdleAction ?? idleAction : idleAction)
+      playAnimation(
+        isJumpCharging.value || isJumping
+          ? jumpAction
+          : isCrouching
+            ? crouchIdleAction ?? idleAction
+            : idleAction
+      )
       return
     }
 
@@ -124,10 +144,23 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
       Math.atan2(movementDirection.x, movementDirection.z),
       0
     )
-    playAnimation(isCrouching ? crouchWalkAction ?? walkAction : walkAction)
+    playAnimation(
+      isJumpCharging.value || isJumping
+        ? jumpAction
+        : isCrouching
+          ? crouchWalkAction ?? walkAction
+          : walkAction
+    )
   }
 
   const updateFrame = (delta: number, animationState: AnimationState) => {
+    if (jumpReleased && isJumpCharging.value && isGrounded()) {
+      characterBody.velocity.y = jumpImpulse
+      isJumping = true
+      isJumpCharging.value = false
+      jumpReleased = false
+    }
+
     updateCharacterMovement(animationState)
 
     accumulator += Math.min(delta, 0.1)
@@ -135,6 +168,10 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     while (accumulator >= fixedTimeStep) {
       world.fixedStep(fixedTimeStep)
       accumulator -= fixedTimeStep
+    }
+
+    if (isJumping && isGrounded()) {
+      isJumping = false
     }
 
     characterRoot.value.position.set(
@@ -162,6 +199,9 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
 
   const handleWindowBlur = () => {
     isCrouching = false
+    isJumpCharging.value = false
+    isJumping = false
+    jumpReleased = false
     pressedMovementKeys.clear()
   }
 
@@ -170,6 +210,15 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
 
     if (isShiftEvent(event)) {
       event.preventDefault()
+      return
+    }
+
+    if (event.code === 'Space') {
+      event.preventDefault()
+      if (!isJumping && isGrounded()) {
+        isJumpCharging.value = true
+        jumpReleased = false
+      }
       return
     }
 
@@ -185,6 +234,14 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     if (isShiftEvent(event)) {
       isCrouching = false
       event.preventDefault()
+      return
+    }
+
+    if (event.code === 'Space') {
+      event.preventDefault()
+      if (isJumpCharging.value) {
+        jumpReleased = true
+      }
       return
     }
 
@@ -216,6 +273,7 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     characterRoot,
     characterVisualRoot,
     floorVisualPosition,
+    isJumpCharging,
     shoveCharacter,
     updateFrame,
   }

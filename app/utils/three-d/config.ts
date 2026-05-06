@@ -19,6 +19,9 @@ export type QualityPreset = {
 export const floorSize = 28
 export const sceneColor = new Color(0x11151c)
 export const movementSpeed = 40
+export const crouchMovementSpeed = 35
+export const jumpImpulse = 8.5
+export const jumpAnticipationTime = 5 / 30
 
 export const camera = new PerspectiveCamera(45, 1, 0.1, 100)
 camera.position.set(4, 3, 6)
