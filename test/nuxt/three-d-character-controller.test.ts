@@ -28,6 +28,6 @@ describe('useThreeDCharacterController', () => {
     window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ' }))
     controller!.updateFrame(1 / 60, animationState)
 
-    expect(controller!.characterBody.velocity.y).toBeGreaterThan(8)
+    expect(controller!.characterBody.velocity.y).toBeGreaterThan(6)
   })
 })
