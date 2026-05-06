@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import type { Object3D, Scene, WebGLRenderer } from 'three'
-import { onBeforeUnmount, onMounted, shallowRef } from 'vue'
+import type { Object3D, Scene, ShadowMapType, WebGLRenderer } from 'three'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import * as CANNON from 'cannon-es'
 import {
   AnimationAction,
   AnimationClip,
+  BasicShadowMap,
   AnimationMixer,
   Box3,
   Color,
@@ -14,7 +15,7 @@ import {
   LoopRepeat,
   Group,
   Mesh,
-  PCFSoftShadowMap,
+  PCFShadowMap,
   PerspectiveCamera,
   Vector3
 } from 'three'
@@ -34,6 +35,21 @@ type TresLoopContext = {
   delta: number
 }
 
+type QualityMode = 'low' | 'medium' | 'high'
+
+type QualityPreset = {
+  label: string
+  modelUrl: string
+  dpr: [number, number]
+  antialias: boolean
+  shadows: boolean
+  shadowMapType: ShadowMapType
+  directionalLightIntensity: number
+  pointLightIntensity: number
+  fogFar: number
+  floorAlignmentInterval: number
+}
+
 const floorSize = 28
 const sceneColor = new Color(0x11151c)
 const camera = new PerspectiveCamera(45, 1, 0.1, 100)
@@ -48,6 +64,49 @@ characterRoot.value.add(characterVisualRoot)
 const characterHalfExtents = new CANNON.Vec3(0.48, 1.15, 0.36)
 const pressedMovementKeys = new Set<string>()
 const movementSpeed = 3.2
+
+const qualityPresets: Record<QualityMode, QualityPreset> = {
+  low: {
+    label: 'Low',
+    modelUrl: '/models/character-optimized.glb',
+    dpr: [1, 1],
+    antialias: false,
+    shadows: false,
+    shadowMapType: BasicShadowMap,
+    directionalLightIntensity: 2.1,
+    pointLightIntensity: 0,
+    fogFar: 28,
+    floorAlignmentInterval: 1 / 8
+  },
+  medium: {
+    label: 'Medium',
+    modelUrl: '/models/character-optimized.glb',
+    dpr: [1, 1.25],
+    antialias: true,
+    shadows: true,
+    shadowMapType: PCFShadowMap,
+    directionalLightIntensity: 2.6,
+    pointLightIntensity: 9,
+    fogFar: 34,
+    floorAlignmentInterval: 1 / 12
+  },
+  high: {
+    label: 'High',
+    modelUrl: '/models/character.glb',
+    dpr: [1, 1.75],
+    antialias: true,
+    shadows: true,
+    shadowMapType: PCFShadowMap,
+    directionalLightIntensity: 3,
+    pointLightIntensity: 18,
+    fogFar: 38,
+    floorAlignmentInterval: 1 / 18
+  }
+}
+
+const qualityModes = Object.keys(qualityPresets) as QualityMode[]
+const selectedQuality = ref<QualityMode>('medium')
+const currentQuality = computed(() => qualityPresets[selectedQuality.value])
 
 const floorMaterialPhysics = new CANNON.Material('floor')
 const characterMaterialPhysics = new CANNON.Material('character')
@@ -86,14 +145,77 @@ characterBody.quaternion.setFromEuler(0, 0.2, 0)
 world.addBody(characterBody)
 
 let controls: OrbitControls | undefined
+let sceneInstance: Scene | undefined
+let rendererInstance: WebGLRenderer | undefined
 let animationMixer: AnimationMixer | undefined
 let idleAction: AnimationAction | undefined
 let walkAction: AnimationAction | undefined
 let activeAction: AnimationAction | undefined
 let accumulator = 0
+let floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
+let hasMounted = false
+let modelLoadVersion = 0
 const fixedTimeStep = 1 / 60
 const movementDirection = new Vector3()
 const characterBounds = new Box3()
+
+const disposeMaterialResources = (material: Record<string, unknown> & { dispose?: () => void }) => {
+  for (const value of Object.values(material)) {
+    if (value && typeof value === 'object' && 'isTexture' in value) {
+      (value as { dispose?: () => void }).dispose?.()
+    }
+  }
+
+  material.dispose?.()
+}
+
+const disposeObjectResources = (object: Object3D) => {
+  object.traverse((node: Object3D) => {
+    if (!(node instanceof Mesh)) {
+      return
+    }
+
+    node.geometry.dispose()
+
+    const materials = Array.isArray(node.material)
+      ? node.material
+      : [node.material]
+
+    for (const material of materials) {
+      disposeMaterialResources(material as Record<string, unknown> & { dispose?: () => void })
+    }
+  })
+}
+
+const resetAnimationState = () => {
+  animationMixer?.stopAllAction()
+  animationMixer = undefined
+  idleAction = undefined
+  walkAction = undefined
+  activeAction = undefined
+}
+
+const clearCharacterModel = () => {
+  resetAnimationState()
+
+  for (const child of [...characterVisualRoot.children]) {
+    characterVisualRoot.remove(child)
+    disposeObjectResources(child)
+  }
+}
+
+const applyQualitySettings = () => {
+  floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
+
+  if (sceneInstance) {
+    sceneInstance.fog = new Fog(sceneColor, 12, currentQuality.value.fogFar)
+  }
+
+  if (rendererInstance && 'shadowMap' in rendererInstance) {
+    rendererInstance.shadowMap.enabled = currentQuality.value.shadows
+    rendererInstance.shadowMap.type = currentQuality.value.shadowMapType
+  }
+}
 
 const findAnimationClip = (clips: AnimationClip[], matcher: RegExp) => {
   return clips.find((clip) => matcher.test(clip.name))
@@ -112,6 +234,7 @@ const playCharacterAnimation = (nextAction: AnimationAction | undefined) => {
 
   activeAction?.fadeOut(0.18)
   activeAction = nextAction
+  floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
 }
 
 const prepareModel = (gltf: GLTF) => {
@@ -119,8 +242,8 @@ const prepareModel = (gltf: GLTF) => {
 
   model.traverse((node: Object3D) => {
     if (node instanceof Mesh) {
-      node.castShadow = true
-      node.receiveShadow = true
+      node.castShadow = currentQuality.value.shadows
+      node.receiveShadow = false
     }
   })
 
@@ -157,6 +280,34 @@ const prepareModel = (gltf: GLTF) => {
   playCharacterAnimation(idleAction)
 }
 
+const loadCharacterModel = () => {
+  const loader = new GLTFLoader()
+  const requestVersion = ++modelLoadVersion
+
+  clearCharacterModel()
+
+  loader.load(currentQuality.value.modelUrl, (gltf) => {
+    if (requestVersion !== modelLoadVersion) {
+      return
+    }
+
+    prepareModel(gltf)
+  })
+}
+
+const setQualityMode = (mode: QualityMode) => {
+  if (selectedQuality.value === mode) {
+    return
+  }
+
+  selectedQuality.value = mode
+  applyQualitySettings()
+
+  if (hasMounted) {
+    loadCharacterModel()
+  }
+}
+
 const alignCharacterToFloor = () => {
   if (characterVisualRoot.children.length === 0) {
     return
@@ -173,16 +324,13 @@ const alignCharacterToFloor = () => {
 }
 
 const handleReady = (context: TresReadyContext) => {
-  context.scene.value.background = sceneColor
-  context.scene.value.fog = new Fog(sceneColor, 12, 38)
+  sceneInstance = context.scene.value
+  sceneInstance.background = sceneColor
 
-  const renderer = context.renderer.instance
-  if ('shadowMap' in renderer) {
-    renderer.shadowMap.enabled = true
-    renderer.shadowMap.type = PCFSoftShadowMap
-  }
+  rendererInstance = context.renderer.instance
+  applyQualitySettings()
 
-  controls = new OrbitControls(camera, renderer.domElement)
+  controls = new OrbitControls(camera, rendererInstance.domElement)
   controls.enableDamping = true
   controls.target.set(0, 1.2, 0)
   controls.maxPolarAngle = Math.PI * 0.48
@@ -270,7 +418,13 @@ const handleLoop = ({ delta }: TresLoopContext) => {
   )
 
   animationMixer?.update(delta)
-  alignCharacterToFloor()
+
+  floorAlignmentElapsed += delta
+  if (floorAlignmentElapsed >= currentQuality.value.floorAlignmentInterval) {
+    alignCharacterToFloor()
+    floorAlignmentElapsed = 0
+  }
+
   controls?.update()
 }
 
@@ -293,13 +447,15 @@ const handleKeyup = (event: KeyboardEvent) => {
 }
 
 onMounted(() => {
-  const loader = new GLTFLoader()
-  loader.load('/models/character.glb', prepareModel)
+  hasMounted = true
+  loadCharacterModel()
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('keyup', handleKeyup)
 })
 
 onBeforeUnmount(() => {
+  hasMounted = false
+  clearCharacterModel()
   controls?.dispose()
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('keyup', handleKeyup)
@@ -312,14 +468,26 @@ onBeforeUnmount(() => {
     aria-label="Interactive 3D character scene"
     @pointerdown="shoveCharacter"
   >
+    <div class="quality-switcher">
+      <button
+        v-for="mode in qualityModes"
+        :key="mode"
+        class="quality-switcher__button"
+        :class="{ 'quality-switcher__button--active': selectedQuality === mode }"
+        type="button"
+        @click="setQualityMode(mode)"
+      >
+        {{ qualityPresets[mode].label }}
+      </button>
+    </div>
+
     <TresCanvas
       :camera="camera"
-      :dpr="[1, 2]"
+      :dpr="currentQuality.dpr"
       :alpha="false"
-      :antialias="true"
-      :shadows="true"
-      :preserve-drawing-buffer="true"
-      :shadow-map-type="PCFSoftShadowMap"
+      :antialias="currentQuality.antialias"
+      :shadows="currentQuality.shadows"
+      :shadow-map-type="currentQuality.shadowMapType"
       clear-color="#11151c"
       render-mode="always"
       window-size
@@ -331,12 +499,13 @@ onBeforeUnmount(() => {
       />
       <TresDirectionalLight
         :position="[4, 7, 5]"
-        :intensity="3"
-        cast-shadow
+        :intensity="currentQuality.directionalLightIntensity"
+        :cast-shadow="currentQuality.shadows"
       />
       <TresPointLight
+        v-if="currentQuality.pointLightIntensity > 0"
         :position="[-4, 2.5, -3]"
-        :args="[0x38bdf8, 18, 14]"
+        :args="[0x38bdf8, currentQuality.pointLightIntensity, 14]"
       />
 
       <primitive :object="characterRoot" />
@@ -360,9 +529,39 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .three-d-scene {
+  position: relative;
   width: 100%;
   min-height: 100svh;
   overflow: hidden;
   touch-action: none;
+}
+
+.quality-switcher {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 2;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid rgb(94 234 212 / 18%);
+  border-radius: 999px;
+  background: rgb(15 23 42 / 78%);
+  backdrop-filter: blur(12px);
+}
+
+.quality-switcher__button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.5rem 0.85rem;
+  background: transparent;
+  color: rgb(191 219 254);
+  font: inherit;
+  cursor: pointer;
+}
+
+.quality-switcher__button--active {
+  background: rgb(94 234 212 / 16%);
+  color: rgb(94 234 212);
 }
 </style>
