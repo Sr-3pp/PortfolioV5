@@ -24,7 +24,7 @@ const {
   characterHalfExtents,
   characterRoot,
   characterVisualRoot,
-  floorVisualPosition,
+  floorRoot,
   isJumpCharging,
   shoveCharacter,
   updateFrame,
@@ -337,23 +337,24 @@ onBeforeUnmount(() => {
 
       <primitive :object="characterRoot" />
 
-      <primitive
-        :object="gridHelper"
-        :position="[floorVisualPosition[0], 0.01, floorVisualPosition[2]]"
-      />
-
-      <TresMesh
-        :position="floorVisualPosition"
-        :rotation="[-Math.PI / 2, 0, 0]"
-        receive-shadow
-      >
-        <TresPlaneGeometry :args="[floorSize, floorSize]" />
-        <TresMeshStandardMaterial
-          :color="0x252a33"
-          :roughness="0.82"
-          :metalness="0.05"
+      <primitive :object="floorRoot">
+        <primitive
+          :object="gridHelper"
+          :position="[0, 0.01, 0]"
         />
-      </TresMesh>
+
+        <TresMesh
+          :rotation="[-Math.PI / 2, 0, 0]"
+          receive-shadow
+        >
+          <TresPlaneGeometry :args="[floorSize, floorSize]" />
+          <TresMeshStandardMaterial
+            :color="0x252a33"
+            :roughness="0.82"
+            :metalness="0.05"
+          />
+        </TresMesh>
+      </primitive>
     </TresCanvas>
   </div>
 </template>

@@ -1,3 +1,5 @@
 <template>
-  <ThreeD />
+  <ClientOnly>
+    <LazyThreeD />
+  </ClientOnly>
 </template>

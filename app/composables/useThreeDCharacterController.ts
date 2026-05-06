@@ -1,6 +1,7 @@
 import type { AnimationAction } from 'three'
 import * as CANNON from 'cannon-es'
 import { Group, Vector3 } from 'three'
+import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
 type AnimationState = {
   idleAction?: AnimationAction
@@ -15,11 +16,10 @@ export const useThreeDCharacterController = (movementSpeed: number, crouchMoveme
   const crouchSpeed = Math.max(crouchMovementSpeed, 0)
   const characterRoot = shallowRef(new Group())
   const characterVisualRoot = new Group()
+  const floorRoot = shallowRef(new Group())
   characterRoot.value.add(characterVisualRoot)
 
   const characterHalfExtents = new CANNON.Vec3(0.48, 1.15, 0.36)
-  const floorVisualPosition = ref<[number, number, number]>([0, 0, 0])
-
   const pressedMovementKeys = new Set<string>()
   let isCrouching = false
   const floorMaterialPhysics = new CANNON.Material('floor')
@@ -59,8 +59,9 @@ export const useThreeDCharacterController = (movementSpeed: number, crouchMoveme
   characterBody.quaternion.setFromEuler(0, 0.2, 0)
   world.addBody(characterBody)
 
-  let accumulator = 0
   const fixedTimeStep = 1 / 60
+  const maxPhysicsSubSteps = 5
+  const maxFrameDelta = fixedTimeStep * maxPhysicsSubSteps
   const movementDirection = new Vector3()
   const isJumpCharging = ref(false)
   let isJumping = false
@@ -163,12 +164,7 @@ export const useThreeDCharacterController = (movementSpeed: number, crouchMoveme
 
     updateCharacterMovement(animationState)
 
-    accumulator += Math.min(delta, 0.1)
-
-    while (accumulator >= fixedTimeStep) {
-      world.fixedStep(fixedTimeStep)
-      accumulator -= fixedTimeStep
-    }
+    world.step(fixedTimeStep, Math.min(delta, maxFrameDelta), maxPhysicsSubSteps)
 
     if (isJumping && isGrounded()) {
       isJumping = false
@@ -186,11 +182,11 @@ export const useThreeDCharacterController = (movementSpeed: number, crouchMoveme
       characterBody.quaternion.w
     )
 
-    floorVisualPosition.value = [
+    floorRoot.value.position.set(
       -characterBody.position.x,
       0,
       -characterBody.position.z
-    ]
+    )
   }
 
   const isShiftEvent = (event: KeyboardEvent) => {
@@ -272,7 +268,7 @@ export const useThreeDCharacterController = (movementSpeed: number, crouchMoveme
     characterHalfExtents,
     characterRoot,
     characterVisualRoot,
-    floorVisualPosition,
+    floorRoot,
     isJumpCharging,
     shoveCharacter,
     updateFrame,
