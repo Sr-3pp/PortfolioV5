@@ -1,0 +1,9 @@
+{
+    "position": "Freelance Developer",
+    "company": "Self-employed",
+    "period": "2022-Present",
+    "description": "Providing software development services to various clients.",
+    "link": "https://www.freelance.com",
+    "order": 2,
+    "technologies": ["JavaScript", "React", "Node.js"]
+}

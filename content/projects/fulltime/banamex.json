@@ -1,0 +1,9 @@
+{
+    "position": "Software Engineer",
+    "company": "Banamex",
+    "period": "2020-2022",
+    "description": "Worked on various banking software projects.",
+    "link": "https://www.banamex.com",
+    "order": 1,
+    "technologies": ["JavaScript", "TypeScript", "Node.js"]
+}
