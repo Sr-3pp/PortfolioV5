@@ -1,0 +1,3 @@
+[submodule ".codex"]
+	path = .codex
+	url = https://github.com/Sr-3pp/codex-agents.git
