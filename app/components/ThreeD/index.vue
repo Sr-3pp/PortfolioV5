@@ -36,6 +36,8 @@ let rendererInstance: WebGLRenderer | undefined
 let animationMixer: AnimationMixer | undefined
 let idleAction: AnimationAction | undefined
 let walkAction: AnimationAction | undefined
+let crouchIdleAction: AnimationAction | undefined
+let crouchWalkAction: AnimationAction | undefined
 let activeAction: AnimationAction | undefined
 let floorAlignmentElapsed = currentQuality.value.floorAlignmentInterval
 let hasMounted = false
@@ -48,6 +50,8 @@ const resetAnimationState = () => {
   animationMixer = undefined
   idleAction = undefined
   walkAction = undefined
+  crouchIdleAction = undefined
+  crouchWalkAction = undefined
   activeAction = undefined
 }
 
@@ -117,13 +121,22 @@ const prepareModel = (gltf: GLTF) => {
     return
   }
 
-
   const walkClip = findAnimationClip(gltf.animations, /^walking$/i)
     ?? findAnimationClip(gltf.animations, /walk/i)
     ?? idleClip
 
+  const crouchIdleClip = findAnimationClip(gltf.animations, /^crouch_idle$/i)
+    ?? findAnimationClip(gltf.animations, /crouch.*idle|idle.*crouch/i)
+    ?? idleClip
+
+  const crouchWalkClip = findAnimationClip(gltf.animations, /^crouched_walking$/i)
+    ?? findAnimationClip(gltf.animations, /crouch.*walk|walk.*crouch/i)
+    ?? walkClip
+
   idleAction = animationMixer.clipAction(idleClip)
   walkAction = animationMixer.clipAction(walkClip)
+  crouchIdleAction = animationMixer.clipAction(crouchIdleClip)
+  crouchWalkAction = animationMixer.clipAction(crouchWalkClip)
 
   playCharacterAnimation(idleAction)
 }
@@ -184,6 +197,8 @@ const handleLoop = ({ delta }: TresLoopContext) => {
   updateFrame(delta, {
     idleAction,
     walkAction,
+    crouchIdleAction,
+    crouchWalkAction,
     playAnimation: playCharacterAnimation
   })
 

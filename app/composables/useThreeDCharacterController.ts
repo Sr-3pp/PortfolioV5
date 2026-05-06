@@ -5,10 +5,13 @@ import { Group, Vector3 } from 'three'
 type AnimationState = {
   idleAction?: AnimationAction
   walkAction?: AnimationAction
+  crouchIdleAction?: AnimationAction
+  crouchWalkAction?: AnimationAction
   playAnimation: (action?: AnimationAction) => void
 }
 
 export const useThreeDCharacterController = (movementSpeed: number) => {
+  const crouchSpeed = Math.max(movementSpeed - 5, 0)
   const characterRoot = shallowRef(new Group())
   const characterVisualRoot = new Group()
   characterRoot.value.add(characterVisualRoot)
@@ -17,6 +20,7 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
   const floorVisualPosition = ref<[number, number, number]>([0, 0, 0])
 
   const pressedMovementKeys = new Set<string>()
+  let isCrouching = false
   const floorMaterialPhysics = new CANNON.Material('floor')
   const characterMaterialPhysics = new CANNON.Material('character')
   const world = new CANNON.World({
@@ -73,7 +77,13 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     )
   }
 
-  const updateCharacterMovement = ({ idleAction, walkAction, playAnimation }: AnimationState) => {
+  const updateCharacterMovement = ({
+    idleAction,
+    walkAction,
+    crouchIdleAction,
+    crouchWalkAction,
+    playAnimation
+  }: AnimationState) => {
     movementDirection.set(0, 0, 0)
 
     if (pressedMovementKeys.has('ArrowUp')) {
@@ -95,7 +105,7 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     if (movementDirection.lengthSq() === 0) {
       characterBody.velocity.x = 0
       characterBody.velocity.z = 0
-      playAnimation(idleAction)
+      playAnimation(isCrouching ? crouchIdleAction ?? idleAction : idleAction)
       return
     }
 
@@ -105,14 +115,16 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
       characterBody.wakeUp()
     }
 
-    characterBody.velocity.x = movementDirection.x * movementSpeed
-    characterBody.velocity.z = movementDirection.z * movementSpeed
+    const activeMovementSpeed = isCrouching ? crouchSpeed : movementSpeed
+
+    characterBody.velocity.x = movementDirection.x * activeMovementSpeed
+    characterBody.velocity.z = movementDirection.z * activeMovementSpeed
     characterBody.quaternion.setFromEuler(
       0,
       Math.atan2(movementDirection.x, movementDirection.z),
       0
     )
-    playAnimation(walkAction)
+    playAnimation(isCrouching ? crouchWalkAction ?? walkAction : walkAction)
   }
 
   const updateFrame = (delta: number, animationState: AnimationState) => {
@@ -144,7 +156,23 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
     ]
   }
 
+  const isShiftEvent = (event: KeyboardEvent) => {
+    return event.key === 'Shift' || event.code.startsWith('Shift')
+  }
+
+  const handleWindowBlur = () => {
+    isCrouching = false
+    pressedMovementKeys.clear()
+  }
+
   const handleKeydown = (event: KeyboardEvent) => {
+    isCrouching = isCrouching || event.shiftKey || isShiftEvent(event)
+
+    if (isShiftEvent(event)) {
+      event.preventDefault()
+      return
+    }
+
     if (!event.key.startsWith('Arrow')) {
       return
     }
@@ -154,6 +182,14 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
   }
 
   const handleKeyup = (event: KeyboardEvent) => {
+    if (isShiftEvent(event)) {
+      isCrouching = false
+      event.preventDefault()
+      return
+    }
+
+    isCrouching = event.shiftKey
+
     if (!event.key.startsWith('Arrow')) {
       return
     }
@@ -165,11 +201,13 @@ export const useThreeDCharacterController = (movementSpeed: number) => {
   onMounted(() => {
     window.addEventListener('keydown', handleKeydown)
     window.addEventListener('keyup', handleKeyup)
+    window.addEventListener('blur', handleWindowBlur)
   })
 
   onBeforeUnmount(() => {
     window.removeEventListener('keydown', handleKeydown)
     window.removeEventListener('keyup', handleKeyup)
+    window.removeEventListener('blur', handleWindowBlur)
   })
 
   return {
